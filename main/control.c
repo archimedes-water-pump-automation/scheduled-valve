@@ -50,6 +50,17 @@ static void control_task(void *arg)
         bool keep_open = telemetry_take_keep_open();
         bool turn_off  = telemetry_take_turn_off();
 
+        /* First time the broker is reachable since boot, say what the
+         * relay is actually doing. The valve topic is retained, so until
+         * this goes out it still holds whatever was published before the
+         * restart — and a reboot while holding leaves the valve closed,
+         * because the relay de-energises on power loss. */
+        if (telemetry_take_first_connect()) {
+            ESP_LOGI(TAG, "announcing boot state: valve %s",
+                     valve_is_open() ? "open" : "closed");
+            telemetry_publish_valve(valve_is_open(), "boot");
+        }
+
         state_t next = state;
 
         /* turn_off is a safety command and is honoured in any state,
