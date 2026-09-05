@@ -189,3 +189,7 @@ indefinitely for a controller that has lost power.
 - No valve position feedback. The firmware knows what it commanded, not what
   the valve did. A stuck valve is undetectable here.
 - No OTA update path.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
