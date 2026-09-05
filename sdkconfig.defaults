@@ -1,0 +1,11 @@
+CONFIG_IDF_TARGET="esp32"
+
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# Resync periodically. Drift over a long uptime shifts the schedule.
+CONFIG_LWIP_SNTP_UPDATE_DELAY=3600000
+
+# Drop queued publishes rather than delivering stale valve events late.
+CONFIG_MQTT_OUTBOX_EXPIRED_TIMEOUT_MS=30000
