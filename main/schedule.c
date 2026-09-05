@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -53,6 +54,28 @@ void schedule_time_string(char *buf, size_t len)
     } else {
         snprintf(buf, len, "--:--");
     }
+}
+
+bool schedule_iso8601(char *buf, size_t len)
+{
+    time_t    now;
+    struct tm utc;
+
+    if (buf == NULL || len < SCHEDULE_ISO8601_LEN) {
+        return false;
+    }
+
+    /* UTC, not local: TZ_STRING is for the schedule and the human-facing
+     * local_time field. Every timestamp on the wire is UTC, so no
+     * consumer has to guess which offset a device meant. */
+    time(&now);
+    gmtime_r(&now, &utc);
+
+    if (utc.tm_year <= (2020 - 1900)) {
+        return false;
+    }
+
+    return strftime(buf, len, "%Y-%m-%dT%H:%M:%SZ", &utc) > 0;
 }
 
 /* Windows may cross midnight, in which case end < start. */

@@ -1,3 +1,4 @@
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -24,6 +25,11 @@ static portMUX_TYPE  s_evt_mux = portMUX_INITIALIZER_UNLOCKED;
 static volatile bool s_keep_open_pending;
 static volatile bool s_turn_off_pending;
 
+/* Delivered by the broker if this controller drops off without a clean
+ * disconnect, so a dashboard cannot show "open" for a board that lost
+ * power. It carries neither timestamp nor uptime: the broker publishes
+ * it long after this controller wrote it, so both would be lies.
+ * MQTT_CONTRACT.md makes them optional for exactly this case. */
 static const char *LWT_PAYLOAD =
     "{\"event\":\"valve\",\"device\":\"" DEVICE_ID "\",\"state\":\"unknown\","
     "\"reason\":\"controller_offline\"}";
@@ -45,26 +51,64 @@ bool telemetry_take_turn_off(void)  { return take_flag(&s_turn_off_pending);  }
 
 /* ======================= publish ======================= */
 
+/* Appends to buf at *off, tracking the length the message would have
+ * needed so the caller can tell a truncated payload from a whole one. */
+static void json_append(char *buf, size_t size, size_t *off,
+                        const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(*off < size ? buf + *off : NULL,
+                      *off < size ? size - *off : 0,
+                      fmt, ap);
+    va_end(ap);
+
+    if (n > 0) {
+        *off += (size_t)n;
+    }
+}
+
 void telemetry_publish_valve(bool open, const char *reason)
 {
+    char   payload[256];
+    size_t off = 0;
+    char   ts[SCHEDULE_ISO8601_LEN];
+    char   clock[8];
+
     if (!s_connected || s_client == NULL) {
         return;
     }
 
-    char clock[8];
+    /* The envelope every message on every topic shares: event name,
+     * this device, and the UTC timestamp when the clock has one. See
+     * MQTT_CONTRACT.md. */
+    json_append(payload, sizeof(payload), &off,
+                "{\"event\":\"valve\",\"device\":\"%s\"", DEVICE_ID);
+
+    if (schedule_iso8601(ts, sizeof(ts))) {
+        json_append(payload, sizeof(payload), &off, ",\"timestamp\":\"%s\"", ts);
+    }
+
+    /* local_time stays alongside it for the humans reading a dashboard:
+     * this module's whole behaviour is described in local hours. */
     schedule_time_string(clock, sizeof(clock));
 
-    char payload[256];
-    snprintf(payload, sizeof(payload),
-             "{\"event\":\"valve\",\"device\":\"%s\",\"state\":\"%s\","
-             "\"reason\":\"%s\",\"local_time\":\"%s\",\"uptime_s\":%lu}",
-             DEVICE_ID, open ? "open" : "closed", reason, clock,
-             (unsigned long)(esp_timer_get_time() / 1000000));
+    json_append(payload, sizeof(payload), &off,
+                ",\"state\":\"%s\",\"reason\":\"%s\",\"local_time\":\"%s\""
+                ",\"uptime_s\":%lu}",
+                open ? "open" : "closed", reason, clock,
+                (unsigned long)(esp_timer_get_time() / 1000000));
+
+    if (off >= sizeof(payload)) {
+        ESP_LOGE(TAG, "valve payload truncated at %u bytes, not published",
+                 (unsigned)sizeof(payload));
+        return;
+    }
 
     /* enqueue, not publish: the blocking variant can park the caller
      * for seconds on a degraded link. Valve control cannot wait. */
     esp_mqtt_client_enqueue(s_client, TOPIC_VALVE, payload,
-                            (int)strlen(payload), 1, 1, true);
+                            (int)off, 1, 1, true);
 }
 
 /* ======================= commands ======================= */
@@ -86,9 +130,20 @@ static void set_command(const char *cmd)
     }
 }
 
+/* Parses one command message. The shape it expects is fixed by
+ * MQTT_CONTRACT.md and is what pump-ctl publishes:
+ *
+ *   {"event":"command","device":"pump-01","timestamp":"...",
+ *    "command":"keep_open","reason":"flow_confirmed","uptime_s":338}
+ *
+ * Only the command field decides anything; device and reason are logged
+ * so the valve's log says who asked and why. */
 static void handle_command(const char *data, int len)
 {
-    char buf[128];
+    /* Big enough for the full envelope with a timestamp and a reason.
+     * A payload that does not fit is rejected rather than truncated
+     * into a different command. */
+    char buf[256];
 
     if (len <= 0 || len >= (int)sizeof(buf)) {
         ESP_LOGW(TAG, "command payload size %d rejected", len);
@@ -97,20 +152,33 @@ static void handle_command(const char *data, int len)
     memcpy(buf, data, len);
     buf[len] = '\0';
 
-    /* JSON form: {"command":"keep_open"} / {"command":"turn_off"} */
     cJSON *root = cJSON_Parse(buf);
     if (root != NULL) {
-        const cJSON *cmd = cJSON_GetObjectItemCaseSensitive(root, "command");
-        if (cJSON_IsString(cmd) && cmd->valuestring != NULL) {
+        const cJSON *event  = cJSON_GetObjectItemCaseSensitive(root, "event");
+        const cJSON *device = cJSON_GetObjectItemCaseSensitive(root, "device");
+        const cJSON *cmd    = cJSON_GetObjectItemCaseSensitive(root, "command");
+        const cJSON *reason = cJSON_GetObjectItemCaseSensitive(root, "reason");
+
+        if (cJSON_IsString(event) && strcmp(event->valuestring, "command") != 0) {
+            /* Something else's event reached this topic. Acting on its
+             * command field would be acting on a message not addressed
+             * to this valve. */
+            ESP_LOGW(TAG, "payload on command topic is not a command event");
+        } else if (cJSON_IsString(cmd) && cmd->valuestring != NULL) {
+            ESP_LOGI(TAG, "command from %s (%s)",
+                     cJSON_IsString(device) ? device->valuestring : "unknown",
+                     cJSON_IsString(reason) ? reason->valuestring : "no reason");
             set_command(cmd->valuestring);
         } else {
             ESP_LOGW(TAG, "json has no string 'command' field");
         }
+
         cJSON_Delete(root);
         return;
     }
 
-    /* Bare form, convenient from mosquitto_pub. */
+    /* Bare form, convenient from mosquitto_pub during bring-up. Not
+     * part of what any module publishes. */
     set_command(buf);
 }
 

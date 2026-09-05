@@ -7,8 +7,10 @@ if not, it closes and waits for the next slot.
 
 The valve sits before the water pump. Replaces manual operation of that valve.
 
-Standalone: no dependency on `pump-controller` or `tank-node`, and it shares no
-topics with them.
+Standalone in its logic: it opens on its own schedule and closes on its own
+guards, needing nothing from the rest of the system to stay safe. The one
+thing it shares is the command topic `pump-ctl` publishes `keep_open` and
+`turn_off` on — see [MQTT_CONTRACT.md](MQTT_CONTRACT.md).
 
 ## Behaviour
 
@@ -134,14 +136,25 @@ Requires ESP-IDF v5.x.
 
 ## MQTT
 
-Dedicated topics; nothing shared with the other modules.
+Defined in [MQTT_CONTRACT.md](MQTT_CONTRACT.md), which is mirrored in every
+repository of this system. The command topic is shared with
+[`pump-ctl`](https://github.com/archimedes-water-pump-automation/pump-ctl);
+changing a field there means changing it on both sides.
 
-**Subscribes** to `watertank/activator-01/cmd` — QoS 1. Both forms accepted:
+**Subscribes** to `watertank/activator-01/cmd` — QoS 1:
 
+```json
+{"event":"command","device":"pump-01","timestamp":"2026-09-05T03:10:12Z",
+ "command":"keep_open","reason":"flow_confirmed","uptime_s":338}
 ```
-{"command":"keep_open"}      {"command":"turn_off"}
-keep_open                    turn_off
-```
+
+Only `command` (`keep_open` or `turn_off`) decides anything. `device` and
+`reason` are logged, so the valve's log says who asked and why, and a payload
+whose `event` is something other than `command` is rejected rather than
+mined for a command field.
+
+A bare command word is also accepted, which is a convenience for `mosquitto_pub`
+during bring-up rather than something any module publishes:
 
 ```sh
 mosquitto_pub -h broker -t watertank/activator-01/cmd -m keep_open -q 1
@@ -157,15 +170,23 @@ correct habit.
 per transition:
 
 ```json
-{"event":"valve","device":"activator-01","state":"open",
- "reason":"scheduled_trial","local_time":"03:10","uptime_s":1840}
+{"event":"valve","device":"activator-01","timestamp":"2026-09-05T06:10:00Z",
+ "state":"open","reason":"scheduled_trial","local_time":"03:10","uptime_s":1840}
 ```
 
 Reasons: `scheduled_trial`, `keep_open`, `trial_timeout`, `turn_off`,
-`max_hold`.
+`max_hold`, `boot`.
+
+`timestamp` is UTC and appears once SNTP has landed; `local_time` is the same
+moment on this board's own clock, kept because everything about this module —
+its window, its interval, its log lines — is described in local hours. No
+module in this system subscribes to this topic today; it exists for dashboards
+and for diagnosing what the activator did.
 
 Last will sets `"state":"unknown"` so a dashboard cannot show `open`
-indefinitely for a controller that has lost power.
+indefinitely for a controller that has lost power. It carries neither
+`timestamp` nor `uptime_s`: the broker publishes it long after this board
+wrote it.
 
 ## Bring-up
 
