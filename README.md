@@ -175,13 +175,19 @@ per transition:
 ```
 
 Reasons: `scheduled_trial`, `keep_open`, `trial_timeout`, `turn_off`,
-`max_hold`, `boot`.
+`max_hold`, and `boot` for the announcement above.
 
 `timestamp` is UTC and appears once SNTP has landed; `local_time` is the same
 moment on this board's own clock, kept because everything about this module —
 its window, its interval, its log lines — is described in local hours. No
 module in this system subscribes to this topic today; it exists for dashboards
 and for diagnosing what the activator did.
+
+On its first connection after a restart the module publishes the state the
+relay is actually in, with `reason: "boot"`. The topic is retained, so without
+it a restart leaves the last pre-restart message standing — `"open"`, for a
+valve that power loss has since closed. Only the first connection, so a
+reconnect never reports a transition that has not happened.
 
 Last will sets `"state":"unknown"` so a dashboard cannot show `open`
 indefinitely for a controller that has lost power. It carries neither

@@ -25,6 +25,11 @@ static portMUX_TYPE  s_evt_mux = portMUX_INITIALIZER_UNLOCKED;
 static volatile bool s_keep_open_pending;
 static volatile bool s_turn_off_pending;
 
+/* Set by the MQTT task on the first connection since boot, taken by the
+ * control task. */
+static volatile bool s_first_connect_pending;
+static volatile bool s_first_connect_seen;
+
 /* Delivered by the broker if this controller drops off without a clean
  * disconnect, so a dashboard cannot show "open" for a board that lost
  * power. It carries neither timestamp nor uptime: the broker publishes
@@ -48,6 +53,11 @@ static bool take_flag(volatile bool *flag)
 
 bool telemetry_take_keep_open(void) { return take_flag(&s_keep_open_pending); }
 bool telemetry_take_turn_off(void)  { return take_flag(&s_turn_off_pending);  }
+
+bool telemetry_take_first_connect(void)
+{
+    return take_flag(&s_first_connect_pending);
+}
 
 /* ======================= publish ======================= */
 
@@ -195,6 +205,13 @@ static void mqtt_event_handler(void *arg, esp_event_base_t base,
             s_connected = true;
             esp_mqtt_client_subscribe(s_client, TOPIC_CMD, 1);
             ESP_LOGI(TAG, "broker connected, subscribed to %s", TOPIC_CMD);
+
+            portENTER_CRITICAL(&s_evt_mux);
+            if (!s_first_connect_seen) {
+                s_first_connect_seen    = true;
+                s_first_connect_pending = true;
+            }
+            portEXIT_CRITICAL(&s_evt_mux);
             break;
 
         case MQTT_EVENT_DISCONNECTED:
